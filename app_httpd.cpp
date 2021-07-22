@@ -205,11 +205,6 @@ static esp_err_t stream_handler(httpd_req_t *req){
     delay(75);
     flashLED(75);
 
-    static int64_t last_frame = 0;
-    if(!last_frame) {
-        last_frame = esp_timer_get_time();
-    }
-
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
     if(res != ESP_OK){
         streamCount = 0;
@@ -221,7 +216,9 @@ static esp_err_t stream_handler(httpd_req_t *req){
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
     while(true){
+        int64_t start_fb_get_time = esp_timer_get_time();
         fb = esp_camera_fb_get();
+        int64_t end_fb_get_time = esp_timer_get_time();
         if (!fb) {
             Serial.println("STREAM: failed to acquire frame");
             res = ESP_FAIL;
@@ -239,16 +236,20 @@ static esp_err_t stream_handler(httpd_req_t *req){
                 _jpg_buf = fb->buf;
             }
         }
+        int64_t start_httpd_resp_send_chunk_time1 = esp_timer_get_time();        
         if(res == ESP_OK){
             res = httpd_resp_send_chunk(req, _STREAM_BOUNDARY, strlen(_STREAM_BOUNDARY));
         }
+        int64_t start_httpd_resp_send_chunk_time2 = esp_timer_get_time();
         if(res == ESP_OK){
             size_t hlen = snprintf((char *)part_buf, 64, _STREAM_PART, _jpg_buf_len);
             res = httpd_resp_send_chunk(req, (const char *)part_buf, hlen);
         }
+        int64_t start_httpd_resp_send_chunk_time3 = esp_timer_get_time();
         if(res == ESP_OK){
             res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_buf_len);
         }
+        int64_t end_httpd_resp_send_chunk_time3 = esp_timer_get_time();
         if(fb){
             esp_camera_fb_return(fb);
             fb = NULL;
@@ -262,13 +263,19 @@ static esp_err_t stream_handler(httpd_req_t *req){
             // We end the stream here only if a Hard failure has been encountered or the connection has been interrupted.
             break;
         }
-        int64_t frame_time = esp_timer_get_time() - last_frame;
-        last_frame = esp_timer_get_time();;
-        frame_time /= 1000;
+        int64_t end_frame_time = esp_timer_get_time();
+        int64_t frame_time = end_frame_time - start_fb_get_time;
         if (debugData) {
-            Serial.printf("MJPG: %uB %ums (%.1ffps)\r\n",
+            Serial.printf("MJPG: %uB %5uus (%2.1ffps) = %5uus fb_get + %5uus fb_check + %5uus chunk1 + %5uus chunk2 + %5uus chunk3 + %5uus cleanup_fb\r\n",
                 (uint32_t)(_jpg_buf_len),
-                (uint32_t)frame_time, 1000.0 / (uint32_t)frame_time);
+                (uint32_t)(frame_time),
+                1000000.0 / (uint32_t)(frame_time),
+                (uint32_t)(end_fb_get_time - start_fb_get_time),
+                (uint32_t)(start_httpd_resp_send_chunk_time1 - end_fb_get_time),
+                (uint32_t)(start_httpd_resp_send_chunk_time2 - start_httpd_resp_send_chunk_time1),
+                (uint32_t)(start_httpd_resp_send_chunk_time3 - start_httpd_resp_send_chunk_time2),
+                (uint32_t)(end_httpd_resp_send_chunk_time3 - start_httpd_resp_send_chunk_time3),
+                (uint32_t)(end_frame_time - end_httpd_resp_send_chunk_time3));
         }
     }
 
@@ -276,7 +283,6 @@ static esp_err_t stream_handler(httpd_req_t *req){
     streamCount = 0;
     if (autoLamp && (lampVal != -1)) setLamp(0);
     Serial.println("Stream ended");
-    last_frame = 0;
     return res;
 }
 
